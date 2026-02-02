@@ -218,8 +218,9 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 		return nil
 	}
 
-	// Ensure logs directory exists
-	if errEnsure := l.ensureLogsDir(); errEnsure != nil {
+	// Ensure dated logs directory exists
+	datedDir, errEnsure := l.ensureDatedLogsDir()
+	if errEnsure != nil {
 		return fmt.Errorf("failed to create logs directory: %w", errEnsure)
 	}
 
@@ -228,9 +229,9 @@ func (l *FileRequestLogger) logRequest(url, method string, requestHeaders map[st
 	if force && !l.enabled {
 		filename = l.generateErrorFilename(url, requestID)
 	}
-	filePath := filepath.Join(l.logsDir, filename)
+	filePath := filepath.Join(datedDir, filename)
 
-	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body)
+	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body, datedDir)
 	if errTemp != nil {
 		log.WithError(errTemp).Warn("failed to create request body temp file, falling back to direct write")
 	}
@@ -306,14 +307,15 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 		return &NoOpStreamingLogWriter{}, nil
 	}
 
-	// Ensure logs directory exists
-	if err := l.ensureLogsDir(); err != nil {
+	// Ensure dated logs directory exists
+	datedDir, err := l.ensureDatedLogsDir()
+	if err != nil {
 		return nil, fmt.Errorf("failed to create logs directory: %w", err)
 	}
 
 	// Generate filename with request ID
 	filename := l.generateFilename(url, requestID)
-	filePath := filepath.Join(l.logsDir, filename)
+	filePath := filepath.Join(datedDir, filename)
 
 	requestHeaders := make(map[string][]string, len(headers))
 	for key, values := range headers {
@@ -322,12 +324,12 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 		requestHeaders[key] = headerValues
 	}
 
-	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body)
+	requestBodyPath, errTemp := l.writeRequestBodyTempFile(body, datedDir)
 	if errTemp != nil {
 		return nil, fmt.Errorf("failed to create request body temp file: %w", errTemp)
 	}
 
-	responseBodyFile, errCreate := os.CreateTemp(l.logsDir, "response-body-*.tmp")
+	responseBodyFile, errCreate := os.CreateTemp(datedDir, "response-body-*.tmp")
 	if errCreate != nil {
 		_ = os.Remove(requestBodyPath)
 		return nil, fmt.Errorf("failed to create response body temp file: %w", errCreate)
@@ -360,6 +362,16 @@ func (l *FileRequestLogger) generateErrorFilename(url string, requestID ...strin
 	return fmt.Sprintf("error-%s", l.generateFilename(url, requestID...))
 }
 
+// getDatedLogsDir returns the logs directory path with today's date as subdirectory.
+// Format: logs/2006-01-02/
+//
+// Returns:
+//   - string: The dated logs directory path
+func (l *FileRequestLogger) getDatedLogsDir() string {
+	dateDir := time.Now().Format("2006-01-02")
+	return filepath.Join(l.logsDir, dateDir)
+}
+
 // ensureLogsDir creates the logs directory if it doesn't exist.
 //
 // Returns:
@@ -369,6 +381,21 @@ func (l *FileRequestLogger) ensureLogsDir() error {
 		return os.MkdirAll(l.logsDir, 0755)
 	}
 	return nil
+}
+
+// ensureDatedLogsDir creates the dated logs subdirectory if it doesn't exist.
+//
+// Returns:
+//   - string: The dated logs directory path
+//   - error: An error if directory creation fails, nil otherwise
+func (l *FileRequestLogger) ensureDatedLogsDir() (string, error) {
+	datedDir := l.getDatedLogsDir()
+	if _, err := os.Stat(datedDir); os.IsNotExist(err) {
+		if err := os.MkdirAll(datedDir, 0755); err != nil {
+			return "", err
+		}
+	}
+	return datedDir, nil
 }
 
 // generateFilename creates a sanitized filename from the URL path and current timestamp.
@@ -444,36 +471,41 @@ func (l *FileRequestLogger) sanitizeForFilename(path string) string {
 }
 
 // cleanupOldErrorLogs keeps only the newest errorLogsMaxFiles forced error log files.
+// It scans all dated subdirectories for error logs.
 func (l *FileRequestLogger) cleanupOldErrorLogs() error {
 	if l.errorLogsMaxFiles <= 0 {
 		return nil
 	}
 
-	entries, errRead := os.ReadDir(l.logsDir)
-	if errRead != nil {
-		return errRead
-	}
-
 	type logFile struct {
-		name    string
+		path    string
 		modTime time.Time
 	}
 
 	var files []logFile
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+
+	// Walk through all dated subdirectories
+	err := filepath.WalkDir(l.logsDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil // Continue on error
 		}
-		name := entry.Name()
+		if d.IsDir() {
+			return nil
+		}
+		name := d.Name()
 		if !strings.HasPrefix(name, "error-") || !strings.HasSuffix(name, ".log") {
-			continue
+			return nil
 		}
-		info, errInfo := entry.Info()
+		info, errInfo := d.Info()
 		if errInfo != nil {
 			log.WithError(errInfo).Warn("failed to read error log info")
-			continue
+			return nil
 		}
-		files = append(files, logFile{name: name, modTime: info.ModTime()})
+		files = append(files, logFile{path: path, modTime: info.ModTime()})
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 
 	if len(files) <= l.errorLogsMaxFiles {
@@ -485,16 +517,16 @@ func (l *FileRequestLogger) cleanupOldErrorLogs() error {
 	})
 
 	for _, file := range files[l.errorLogsMaxFiles:] {
-		if errRemove := os.Remove(filepath.Join(l.logsDir, file.name)); errRemove != nil {
-			log.WithError(errRemove).Warnf("failed to remove old error log: %s", file.name)
+		if errRemove := os.Remove(file.path); errRemove != nil {
+			log.WithError(errRemove).Warnf("failed to remove old error log: %s", file.path)
 		}
 	}
 
 	return nil
 }
 
-func (l *FileRequestLogger) writeRequestBodyTempFile(body []byte) (string, error) {
-	tmpFile, errCreate := os.CreateTemp(l.logsDir, "request-body-*.tmp")
+func (l *FileRequestLogger) writeRequestBodyTempFile(body []byte, dir string) (string, error) {
+	tmpFile, errCreate := os.CreateTemp(dir, "request-body-*.tmp")
 	if errCreate != nil {
 		return "", errCreate
 	}
