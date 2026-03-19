@@ -30,6 +30,18 @@ type OAuthCallback struct {
 	ErrorDescription string
 }
 
+// ShouldPromptForOAuthCallback reports whether the local login flow should fall
+// back to manual callback URL input.
+func ShouldPromptForOAuthCallback(noBrowser bool, promptFn func(string) (string, error)) bool {
+	return noBrowser && promptFn != nil
+}
+
+// PrintOAuthCallbackPromptHint explains how local no-browser mode finishes the
+// OAuth flow.
+func PrintOAuthCallbackPromptHint() {
+	fmt.Println("After authorizing in the browser, paste the callback URL here when prompted to finish login.")
+}
+
 // ParseOAuthCallback extracts OAuth parameters from a callback URL.
 // It returns nil when the input is empty.
 func ParseOAuthCallback(input string) (*OAuthCallback, error) {

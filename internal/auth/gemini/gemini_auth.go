@@ -288,6 +288,7 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 	} else {
 		util.PrintSSHTunnelInstructions(callbackPort)
 		fmt.Printf("Please open this URL in your browser:\n\n%s\n", authURL)
+		misc.PrintOAuthCallbackPromptHint()
 	}
 
 	fmt.Println("Waiting for authentication callback...")
@@ -299,7 +300,7 @@ func (g *GeminiAuth) getTokenFromWeb(ctx context.Context, config *oauth2.Config,
 
 	var manualPromptTimer *time.Timer
 	var manualPromptC <-chan time.Time
-	if opts != nil && opts.Prompt != nil {
+	if opts != nil && misc.ShouldPromptForOAuthCallback(opts.NoBrowser, opts.Prompt) {
 		manualPromptTimer = time.NewTimer(15 * time.Second)
 		manualPromptC = manualPromptTimer.C
 		defer manualPromptTimer.Stop()

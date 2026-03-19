@@ -84,6 +84,7 @@ func (a *IFlowAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	} else {
 		util.PrintSSHTunnelInstructions(callbackPort)
 		fmt.Printf("Visit the following URL to continue authentication:\n%s\n", authURL)
+		misc.PrintOAuthCallbackPromptHint()
 	}
 
 	fmt.Println("Waiting for iFlow authentication callback...")
@@ -103,7 +104,7 @@ func (a *IFlowAuthenticator) Login(ctx context.Context, cfg *config.Config, opts
 	var result *iflow.OAuthResult
 	var manualPromptTimer *time.Timer
 	var manualPromptC <-chan time.Time
-	if opts.Prompt != nil {
+	if misc.ShouldPromptForOAuthCallback(opts.NoBrowser, opts.Prompt) {
 		manualPromptTimer = time.NewTimer(15 * time.Second)
 		manualPromptC = manualPromptTimer.C
 		defer manualPromptTimer.Stop()
